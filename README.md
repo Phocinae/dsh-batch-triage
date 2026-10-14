@@ -85,8 +85,8 @@ rule that never fires is a bug you can see.
 |---|---|
 | `0` | ran, and nothing needs a human |
 | `1` | ran and found something — **not a failure** |
-| `2` | the call was invalid (empty batch, over the cap, duplicate id) |
-| `3` | configuration could not be honoured |
+| `2` | the call was invalid (empty batch, over the cap, malformed item) |
+| `3` | the input or policy could not be honoured (duplicate `id`) |
 | `4` | empty scan |
 | `5` | a recorded expectation was not met |
 | `6` | every item needing the model was skipped |
@@ -99,6 +99,22 @@ can satisfy several at once and the order decides which one you are told about:
 2 usage → 3 config → 4 empty scan → 7 zero budget →
 6 model unavailable → 5 expectation → 1 findings → 0 clean
 ```
+
+A batch of 1–64 items can only reach `0`, `1`, `2`, `3` and `6`. The other three are
+rungs of the ladder that this batch runner has no producer for:
+
+* **`4` empty scan** is pre-empted by `2`: an empty batch is refused as a usage error
+  before any item could be scanned, so `emptyScan` never becomes true here. Rung 4
+  exists for a caller driving `exitCode()` directly.
+* **`5` expectation** has no producer at all — there is no `expect` API in this
+  release. The rung is reserved and documented rather than invented.
+* **`7` zero budget** is refused at load, because `modelStateCap: 0` is a
+  configuration error (see below). `7` is reachable only through `exitCode()`
+  itself, or through a config object that never passed `resolveConfig`.
+
+Reading the ladder as "these are all the outcomes you will see" would be wrong in the
+other direction; it is the complete priority order, not the complete list of
+observable codes.
 
 Two of those orderings are judgements worth stating:
 
@@ -125,15 +141,43 @@ one.
 
 `modelStateCap: 0` is **refused at load time** rather than accepted. It forbids in
 the same call what the caller asked for, and turning that contradiction into a
-triage result would blame the tickets for a configuration mistake.
+triage result would blame the tickets for a configuration mistake. The refusal is
+reported as `TRIAGE_BAD_CONFIG` with exit `2`, not `3`: a cap of zero is a request
+that contradicts itself, which the ladder classes as an invalid call rather than an
+input that could not be read. Nothing reaches the model, so rung `7` is never
+reached — see the note under the exit-code table.
 
 ## Limits and validation
 
-1–64 items per call. More than that is **rejected, not truncated**, because a
-truncated batch reports a summary of the items that happened to arrive first —
-which reads exactly like a summary of the whole batch. Duplicate ids are refused
-rather than merged: ids key the answers, so a merge would drop a ticket and leave
-no way to tell which.
+1–64 items per call, where 64 is the default `maxItems` cap and not the only value it
+can take: an operator who raises `maxItems` raises the batch cap with it, and the
+prefilter is linear in the batch size. More than the cap is **rejected, not
+truncated**, because a truncated batch reports a summary of the items that happened to
+arrive first — which reads exactly like a summary of the whole batch. Duplicate ids are
+refused rather than merged: ids key the answers, so a merge would drop a ticket and
+leave no way to tell which. That refusal is exit `3`, not `2`: the batch itself is
+well-formed, and it is the identity mapping that cannot be honoured.
+
+## What `failOn` can and cannot do here
+
+`failOn` narrows what counts as a finding for the finding rung: `urgent` ignores a
+non-urgent escalation, `none` asks for a report rather than a gate. That is real, and
+it is what the three values do **when the run reaches the finding rung**.
+
+It cannot lower a rung above it, and `6` sits above `1`. The shipped plugin configures
+no model client, so every batch containing a residual item ends at `6` no matter what
+`failOn` says — the coverage gap is decided before the gate is consulted. The two
+running modes are therefore:
+
+| setup | effect of `failOn` |
+|---|---|
+| plugin as shipped (no model client) | none on a batch with residue: the run exits `6` regardless |
+| `triageBatch` called with a config whose `modelClient` is a function | selects between `1` and `0` |
+
+`modelClient` is a library-level option and is deliberately not part of the YAML
+config block below: it is a seam for tests and for a host that supplies a client
+programmatically. Setting it is what makes exit `1` reachable at all, and the client
+is still never called in this release — `modelClass` stays `unavailable`.
 
 ## What `tau` can and cannot do here
 
@@ -159,7 +203,45 @@ the caller would believe something had been checked.
         batchSize: 16
 ```
 
+## Options that do nothing in this release
+
+Four accepted keys have no effect without the model tier. They are listed together
+because the alternative — accepting them silently — is the thing this project
+criticises elsewhere in its own documentation.
+
+| key | status |
+|---|---|
+| `policyId` | accepted, no policy file is loaded |
+| `tokenCap` | accepted, nothing reports `input_tokens` to enforce it against |
+| `timeoutMs` | accepted, nothing spawns a subprocess to time out |
+| `batchSize` | accepted, nothing is sent anywhere to be batched |
+
+They are still range-validated, so `timeoutMs: 0` is refused at load. That is
+deliberate rather than tidy: the validation is the part that will still be correct
+when the tier lands, and removing it now would mean re-adding it later under
+pressure.
+
+`failOn` is a special case worth its own sentence: it *is* operative, but only once
+a `modelClient` is configured. With none configured, any batch containing a residue
+item exits 6, and no `failOn` value can change that — so on the shipped path
+`failOn` has no visible effect either.
+
+## What the rules do with a severity they do not recognise
+
+An unrecognised `severity` — `P4`, `banana`, `kritisch` — is **not** treated as an
+absent one. Dropping it is how a real priority silently becomes `routine`, and
+raising it to urgent would invent a signal. So it becomes `needs_review` with
+`FIELD_SEVERITY_UNRECOGNISED`: the field said something about priority and this
+release does not know what, which is a question rather than a guess in either
+direction.
+
+The recognised vocabulary is wide on purpose (`critical`, `blocker`, `sev1`, `s1`,
+`P0`, `urgent`, `emergency`, `showstopper`, `severity 1`, `1`, `highest` for the top
+tier), because 0.1.0 accepted four labels and `severity: 'P0'` then behaved exactly
+like no severity at all.
+
 ## What is not in this release
+
 
 **The model tier.** The design specifies a local 150M Phocinae model as the fallback
 for the residue, with a fail-closed rule when the service is unreachable. It is not
@@ -184,14 +266,28 @@ optional peer.
 ## Testing
 
 ```sh
-npm test                  # 37 assertions, no host required
+npm test                  # 37 test cases, no host required
 npm run verify:artifacts   # what npm publish would actually ship
 ```
+
+`node --test` reports *test cases*, not assertions: this suite is 37 cases containing
+roughly 130 `assert` calls, many of them inside loops. The distinction matters when a
+case loops — one case failing on the third of five iterations is one failure, and the
+case count alone will not tell you which.
 
 The verifier checks behaviour, not only structure: it runs the real prefilter and
 asserts that **every rule in the table can still fire**. A rule that cannot match
 is indistinguishable from a rule that found nothing, and that exact failure shipped
 twice in this project's family before this check existed.
+
+Two skill artefacts ship, and they are not the same text:
+
+* `lib/skill.mjs` generates a body from the live rule table, and that is what
+  `createPlugin` registers with the host.
+* `skills/batch-triage/SKILL.md` is a hand-written file that travels with the
+  package. Nothing compares the two, and the verifier only asserts that the file
+  exists and is covered by `files[]`. Change the rule table and this one is on you
+  to update.
 
 ## License
 

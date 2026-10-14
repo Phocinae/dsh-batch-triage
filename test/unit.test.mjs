@@ -103,6 +103,53 @@ test('a structured field outranks the body text', () => {
   assert.equal(verdict.reason, 'FIELD_SEVERITY_CRITICAL')
 })
 
+test('A FIELD CAN NEVER BURY AN OUTAGE', () => {
+  // This is the blocker an independent check found in 0.1.0. The field override
+  // returned immediately, so a field could only ever *lower* a verdict:
+  // `{severity: 'high'}` beside "The service is down for all users" produced
+  // `needs_review`, and the run then exited 0 as clean. A production outage was
+  // silenced by a field that was only meant to add information.
+  //
+  // `raiseClass` was written for exactly this, exported, imported -- and never
+  // called.
+  const body = 'The service is down for all users'
+  for (const fields of [
+    { severity: 'high' }, { severity: 'major' }, { severity: 'sev2' },
+    { severity: 's2' }, { reporter_tier: 'enterprise' },
+  ]) {
+    const verdict = prefilter(item('1', body, fields), config)
+    assert.equal(verdict.class, 'urgent', JSON.stringify(fields))
+    assert.equal(verdict.reason, 'OUTAGE_REPORTED')
+    assert.ok(
+      verdict.reasonCodes.some((code) => code.includes('OVERRULED_BY_STRONGER_TEXT')),
+      `the disagreement must be recorded, got ${JSON.stringify(verdict.reasonCodes)}`,
+    )
+  }
+
+  // And the end-to-end consequence: the batch reports the outage, not a clean run.
+  const result = triageBatch([item('a', body, { severity: 'high' })], config)
+  assert.equal(result.items[0].class, 'urgent')
+  assert.deepEqual(result.summary.urgentIds, ['a'])
+  assert.equal(result.exitCode, EXIT.FINDINGS)
+})
+
+test('the two signals are combined, and the stronger one wins either way', () => {
+  // Field higher than text.
+  assert.equal(prefilter(item('1', 'How do I install this?',
+    { severity: 'critical' }), config).class, 'urgent')
+  // Text higher than field.
+  assert.equal(prefilter(item('1', 'The service is down for all users',
+    { severity: 'high' }), config).class, 'urgent')
+  // Agreement produces one code, not a spurious disagreement.
+  const agree = prefilter(item('1', 'The service is down for all users',
+    { severity: 'critical' }), config)
+  assert.equal(agree.class, 'urgent')
+  assert.ok(!agree.reasonCodes.some((code) => code.includes('OVERRULED')),
+    JSON.stringify(agree.reasonCodes))
+  // A field with no readable text still decides on its own.
+  assert.equal(prefilter(item('1', '', { severity: 'critical' }), config).class, 'urgent')
+})
+
 test('field overrides cover the documented signals', () => {
   const cases = [
     [{ severity: 'BLOCKER' }, 'urgent'],
@@ -115,6 +162,45 @@ test('field overrides cover the documented signals', () => {
     const verdict = prefilter(item('1', 'anything at all', fields), config)
     assert.equal(verdict.class, expected, JSON.stringify(fields))
   }
+})
+
+test('the severity vocabulary covers the labels reporters actually use', () => {
+  // 0.1.0 accepted four labels per tier, so `severity: 'P0'` -- standard vocabulary
+  // for the most severe class -- was indistinguishable from *no severity at all*,
+  // and an innocuous body then came out `routine`.
+  for (const value of ['critical', 'blocker', 'sev1', 's1', 'P0', 'p1', 'urgent',
+    'emergency', 'showstopper', 'sev-1', 'severity 1', '1', 'highest']) {
+    const verdict = prefilter(item('1', 'body', { severity: value }), config)
+    assert.equal(verdict.class, 'urgent', `severity ${value}`)
+  }
+  for (const value of ['high', 'major', 'sev2', 's2', 'P2', 'medium', 'moderate', 'P3']) {
+    const verdict = prefilter(item('1', 'body', { severity: value }), config)
+    assert.equal(verdict.class, 'needs_review', `severity ${value}`)
+  }
+})
+
+test('AN UNRECOGNISED SEVERITY IS A QUESTION, NOT AN ABSENCE', () => {
+  // `severity: 'banana'` dropping to "no severity set" is how a real priority
+  // silently becomes routine. Raising it to urgent would invent a signal. So it
+  // is needs_review with its own code -- the same answer this prefilter gives
+  // everything it cannot place.
+  for (const value of ['P4', 'banana', 'kritisch', 'sev9']) {
+    const verdict = prefilter(
+      item('1', 'How do I install this?', { severity: value }), config)
+    assert.notEqual(verdict.class, 'routine', `severity ${value}`)
+    assert.equal(verdict.class, 'needs_review', `severity ${value}`)
+    assert.equal(verdict.reason, 'FIELD_SEVERITY_UNRECOGNISED')
+  }
+
+  // An absent severity is not unrecognised, and must not raise anything.
+  assert.equal(prefilter(item('1', 'How do I install this?', {}), config).class, 'routine')
+  assert.equal(prefilter(item('1', 'How do I install this?',
+    { severity: '' }), config).class, 'routine')
+
+  // An unrecognised severity never lowers a body that is already more severe.
+  const urgent = prefilter(
+    item('1', 'The service is down for all users', { severity: 'banana' }), config)
+  assert.equal(urgent.class, 'urgent')
 })
 
 test('raiseClass can only go up', () => {
@@ -290,10 +376,17 @@ test('a budget cap produces needs_review with the budget NAMED', () => {
   assert.equal(result.summary.budgetRefusals, 1)
 })
 
-test('modelStateCap of 0 is refused as a configuration error, not a result', () => {
+test('modelStateCap of 0 is refused at load, as a bad config rather than a result', () => {
   assert.throws(() => resolveConfig({ modelStateCap: 0 }), (error) => {
     assert.equal(error.code, ERROR_CODES.BAD_CONFIG)
     assert.match(error.message, /configuration error/)
+    return true
+  })
+  // `-0` is the same cap spelled differently and must be refused the same way:
+  // `-0 < 0` is false, so without an explicit check it would load as a cap of 0 and
+  // reach `deriveExit`'s "the cap was zero" rung, which `min: 1` exists to prevent.
+  assert.throws(() => resolveConfig({ modelStateCap: -0 }), (error) => {
+    assert.equal(error.code, ERROR_CODES.BAD_CONFIG)
     return true
   })
 })

@@ -55,9 +55,11 @@ body verbatim in `text` and put anything you inferred into `fields` instead —
 | 0 | ran, and nothing needs a human |
 | 1 | ran and found something — **not a failure** |
 | 6 | every item needing the model was skipped — also a successful run |
-| 2 | the call was invalid (empty batch, more than 64 items, duplicate id) |
-| 3 | configuration could not be honoured |
-| 5 | a recorded expectation was not met |
+| 2 | the call was invalid (empty batch, more than the cap, malformed item) |
+| 3 | the input could not be honoured (duplicate `id`) |
+| 4 | empty scan — reserved; an empty batch is refused as `2` before it can fire |
+| 5 | a recorded expectation was not met — reserved; this release has no `expect` API |
+| 7 | a cap was zero before any item could reach the model — reserved; `modelStateCap: 0` is refused at load |
 
 `1` and `6` are normal outcomes for a working tool. A CI job that treats them as
 failures will be red on every batch worth running.
@@ -65,3 +67,7 @@ failures will be red on every batch worth running.
 If both are true at once, `6` wins, because "this run could not cover everything"
 is a stronger statement than "some of it needs a human". Read the summary, not
 only the code: the urgent ids are listed there either way.
+
+A batch of 1–64 items in practice only returns `0`, `1`, `2`, `3` or `6`: with no
+model client configured, any batch containing an item no rule could place ends at
+`6`, because the coverage gap outranks the finding.

@@ -17,6 +17,7 @@
  */
 import { resolveConfig } from './lib/config.mjs'
 import { triageBatch } from './lib/triage.mjs'
+import { TriageError } from './lib/errors.mjs'
 
 const TRIAGE_ITEM_SCHEMA = {
   type: 'object',
@@ -53,18 +54,20 @@ const BATCH_TRIAGE_PARAMETERS = {
     items: {
       type: 'array',
       items: TRIAGE_ITEM_SCHEMA,
-      description: 'Tickets to triage, 1..64 per call. A larger submission is rejected, '
-        + 'not truncated.',
+      description: 'Tickets to triage, 1 per call up to the configured cap (64 by default). '
+        + 'A larger submission is rejected, not truncated.',
     },
     tau: {
       type: 'number',
-      description: 'Escalation threshold in [0,1]. Asymmetric: it can only make the '
-        + 'result more cautious, never less.',
+      description: 'Escalation threshold in [0,1] (null to disable). Asymmetric: it can only '
+        + 'make the result more cautious, never less. A value outside [0,1] is refused.',
     },
     modelStateCap: {
       type: 'integer',
-      description: 'Max tickets that may reach the model in this call. Tickets beyond it '
-        + 'are needs_review with reason BUDGET_EXHAUSTED.',
+      description: 'Max tickets that may reach the model in this call, at least 1. Tickets '
+        + 'beyond it are needs_review with reason BUDGET_EXHAUSTED. 0 is refused rather '
+        + 'than accepted: asking for model coverage and forbidding it in the same call is '
+        + 'a configuration error, not a triage result.',
     },
     failOn: {
       type: 'string',
@@ -137,6 +140,29 @@ const BATCH_TRIAGE_OUTPUT = {
   required: ['summary', 'items', 'exitCode', 'exitBasis', 'note'],
 }
 
+/**
+ * The summary a refusal carries.
+ *
+ * Every key the output schema requires, with zero counts: a refused call assessed
+ * nothing, so reporting counts would invent a result. `skippedModel` stays false
+ * for the same reason — nothing was skipped, the call never started.
+ */
+function emptySummary() {
+  return {
+    total: 0,
+    routine: 0,
+    needsReview: 0,
+    urgent: 0,
+    urgentIds: [],
+    escalatedIds: [],
+    decidedByPrefilter: 0,
+    decidedByUnavailable: 0,
+    decidedByBudget: 0,
+    skippedModel: false,
+    modelClientConfigured: false,
+  }
+}
+
 export function createTools(config, logger = null) {
   return [
     {
@@ -151,15 +177,52 @@ export function createTools(config, logger = null) {
       async execute(input = {}) {
         // Per-call overrides are resolved through the same validator as the
         // plugin config, so `tau: 2` fails here the same way it fails at load.
-        const callConfig = resolveConfig({
-          ...config,
-          tau: input.tau === undefined ? config.tau : input.tau,
-          modelStateCap: input.modelStateCap === undefined
-            ? config.modelStateCap
-            : input.modelStateCap,
-          failOn: input.failOn === undefined ? config.failOn : input.failOn,
-        })
-        const result = triageBatch(input.items, callConfig)
+        //
+        // A refused call is returned as a described rejection rather than thrown.
+        // The schema subset the host enforces has no `minimum`/`maximum`/`minItems`,
+        // so "modelStateCap: 0", "tau: 2", "failOn: sometimes" and an empty `items`
+        // are all schema-valid inputs; throwing would make them an exception inside
+        // the harness instead of an answer the caller can act on. The exit code is
+        // carried through unchanged (2 for usage, 3 for a duplicate id).
+        let callConfig
+        try {
+          callConfig = resolveConfig({
+            ...config,
+            tau: input.tau === undefined ? config.tau : input.tau,
+            modelStateCap: input.modelStateCap === undefined
+              ? config.modelStateCap
+              : input.modelStateCap,
+            failOn: input.failOn === undefined ? config.failOn : input.failOn,
+          })
+        } catch (error) {
+          if (!(error instanceof TriageError)) throw error
+          logger?.warn?.(`batch_triage refused: ${error.code}`)
+          return {
+            summary: emptySummary(),
+            items: [],
+            exitCode: error.exitCode,
+            exitBasis: 'refused',
+            note: `Refused before triage: ${error.message}. No item was assessed, so this `
+              + 'is not a triage result and carries no findings.',
+          }
+        }
+
+        let result
+        try {
+          result = triageBatch(input.items, callConfig)
+        } catch (error) {
+          if (!(error instanceof TriageError)) throw error
+          logger?.warn?.(`batch_triage refused: ${error.code}`)
+          return {
+            summary: emptySummary(),
+            items: [],
+            exitCode: error.exitCode,
+            exitBasis: 'refused',
+            note: `Refused before triage: ${error.message}. No item was assessed, so this `
+              + 'is not a triage result and carries no findings.',
+          }
+        }
+
         const counts = result.summary.counts
         if (logger && typeof logger.info === 'function') {
           logger.info(`batch_triage: ${result.summary.total} items, exit ${result.exitCode}`)
