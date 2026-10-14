@@ -1,0 +1,46 @@
+# dsh-batch-triage bundle patch — mounts the deterministic-first triage tool.
+#
+# Layer order: this bundle patch, then the profile patch, then
+# $DSH_HOME/cordis.patch.yml, then --patch overlays; later layers win.
+#
+# Every key below has a documented default in lib/config.mjs, so this file can be
+# reduced to `enabled: true` and the plugin still works.
+- insert:
+    - id: batch_triage
+      name: dsh-batch-triage
+      config:
+        # The batch cap. A larger submission is REJECTED, not truncated: a
+        # truncated batch reports a summary of the items that happened to arrive
+        # first, which reads exactly like a summary of the whole batch.
+        maxItems: 64
+
+        # Escalation threshold in [0,1].
+        #
+        # With no model tier configured there is no confidence to compare against,
+        # so this can only make the prefilter's answer MORE cautious: it escalates
+        # a `needs_review` item, and never downgrades anything. An option that was
+        # accepted and had no effect would be worse than one that is rejected,
+        # because the caller would believe something had been checked.
+        tau: null
+
+        # Caps on how many items may reach the model tier.
+        #
+        # `null` means no cap. A cap of 0 is refused at load time rather than
+        # accepted: it forbids in the same call what the caller asked for, and
+        # turning that contradiction into a triage result would blame the tickets
+        # for a configuration mistake. Items a cap turns away are `needs_review`
+        # with reason BUDGET_EXHAUSTED, so a truncated run cannot read as complete.
+        modelStateCap: null
+        tokenCap: null
+
+        # What counts as a finding for exit code 1.
+        #   any    — an urgent item, or any escalation
+        #   urgent — an urgent item only
+        #   none   — report only; nothing is a finding
+        failOn: any
+
+        # Per-subprocess timeout for the model tier, in milliseconds.
+        timeoutMs: 20000
+
+        # How many items may be sent to the model tier in one request.
+        batchSize: 16
