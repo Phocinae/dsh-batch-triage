@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.1.1 — 2026-10-14
+
+Two defects from an independent verification pass over 0.1.0, one of them a
+fail-open in the direction this project exists to prevent.
+
+### Blocker — a structured field could bury an outage
+
+The field override returned immediately, so a structured field could only ever
+**lower** a verdict. `{severity: 'high'}` beside "The service is down for all users"
+produced `needs_review`, and the run then exited **0 as clean**:
+
+```
+{severity:'high'} + 'The service is down for all users'
+  -> needs_review   exit 0   urgentIds []
+
+same body, no field
+  -> urgent         exit 1   urgentIds ['a']
+```
+
+A production outage silenced by a field that was only meant to add information, and
+a caller using the documented `failOn: 'urgent'` gate got a green run for it.
+
+`raiseClass` was written for exactly this case — "Raise a class, never lower it" —
+and was exported, imported by `triage.mjs`, and **never called**. Both signals are
+now computed and the stronger wins, which keeps both promises true at once: a field
+can never bury an outage, and a field still lifts an innocuous question to urgent.
+When the two disagree the item carries both reason codes, so a reader sees a field
+that was overruled rather than one confident answer.
+
+### Major — `severity: 'P0'` behaved exactly like no severity at all
+
+The vocabulary accepted four labels per tier (`critical`/`blocker`/`sev1`/`s1`),
+so standard reporter vocabulary for the most severe class was indistinguishable
+from an absent field. An innocuous body then came out `routine`:
+
+```
+{severity:'P0'} + 'How do I install this?'  ->  routine  INSTALL_QUESTION
+{severity:'s1'} + same body                 ->  urgent   FIELD_SEVERITY_CRITICAL
+```
+
+The vocabulary is widened (`P0`, `urgent`, `emergency`, `showstopper`, `highest`,
+`sev-1`, `severity 1`, …), and — the more important half — a value that is **set
+but unrecognised** now becomes `needs_review` with `FIELD_SEVERITY_UNRECOGNISED`
+rather than being dropped. Dropping it is how a real priority silently becomes
+`routine`; raising it to urgent would invent a signal. "The field said something
+about priority and this release does not know what" is a question, and this
+prefilter's answer to a question is always a human.
+
+### Documented rather than silently accepted
+
+`policyId`, `tokenCap`, `timeoutMs` and `batchSize` are accepted and do nothing
+without the model tier, and `failOn` is operative only once a `modelClient` is
+configured. On the shipped path any batch containing a residue item exits 6, and no
+`failOn` value changes that.
+
+They are still range-validated, which is deliberate rather than tidy: the validation
+is the part that will still be correct when the tier lands.
+
+This is the defect shape the README already criticises — *"an option that was
+accepted and had no effect would be worse than one that is rejected"* — committed by
+the same release that says it. Naming all four is the minimum; the choice between
+rejecting them and making them work belongs with the model tier.
+
+### Tests
+
+37 → 41 assertions. The two new groups pin the blocker in both directions (a field
+cannot lower an urgent body; a field can still raise a routine one) and pin that an
+unrecognised severity is a question rather than an absence.
+
 ## 0.1.0 — 2026-10-14
 
 First release. Deterministic-first triage for batches of tickets.
