@@ -85,14 +85,174 @@ test('routine wording is recognised', () => {
   }
 })
 
-test('urgent rules are evaluated before routine ones', () => {
+test('urgent wording is not swallowed by a question in the same ticket', () => {
   // A ticket that is both an outage report and phrased as a question must not be
-  // swallowed by the question rule. This is why the order is documented rather
-  // than derived from a score.
+  // swallowed by the question rule.
+  //
+  // This test did not hold that promise, and 0.1.2 is the fix. Both halves of the
+  // fixture come from the rule table's own vocabulary — `outage` recognises "the
+  // service is down" — so the assertion passed for a reason unrelated to what it
+  // claimed to check: a *shared assumption* between the fixture and the rule it was
+  // testing. It stays, because it is the simplest case and it is still true. The
+  // cases below are the ones that can fail.
   const text = 'How do I stop the outage? The service is down for all users.'
   const verdict = prefilter(item('1', text), config)
   assert.equal(verdict.class, 'urgent')
   assert.equal(verdict.reason, 'OUTAGE_REPORTED')
+})
+
+test('THE SIX REAL-WORLD WORDINGS THAT WERE FAIL-OPEN ARE NOT ROUTINE', () => {
+  // Verbatim from the audit that measured the fail-open, i.e. written the way a
+  // ticket is actually written rather than the way the rule table is written. Each
+  // one is a question **plus** a malfunction in wording no severity rule knew, so
+  // the question rule matched one sentence and decided the whole ticket `routine`,
+  // and the run exited 0 as clean:
+  //
+  //   'How do I install this? Also our production API returns 500 for every request.'
+  //     -> routine / INSTALL_QUESTION   exit 0   before 0.1.2
+  //     -> urgent  / OUTAGE_REPORTED    exit 1   since
+  //
+  // Two halves of the fix are load-bearing and both are exercised here: the severity
+  // vocabularies now contain the symptom as well as the state, and `guardRoutine`
+  // refuses a routine verdict on any body that reports a malfunction at all.
+  const cases = [
+    ['How do I install this? Also our production API returns 500 for every request.',
+      'outage', 'OUTAGE_REPORTED'],
+    ['Is there documentation for the auth flow? We are seeing records deleted from our database.',
+      'data_loss', 'DATA_LOSS_REPORTED'],
+    ['Feature request: please add CSV export. Meanwhile the app is unusable for our whole team.',
+      'outage', 'OUTAGE_REPORTED'],
+    ['How do I configure SSRF protection? Our pentest found we can read other users files.',
+      'security', 'SECURITY_REPORTED'],
+    ['where can i find the logs? the service has been returning 503 all morning',
+      'outage', 'OUTAGE_REPORTED'],
+    ['What is the right way to rotate keys? Our API token leaked in a public repo.',
+      'security', 'SECURITY_REPORTED'],
+  ]
+  for (const [text, ruleId, reason] of cases) {
+    const verdict = prefilter(item('1', text), config)
+    assert.notEqual(verdict.class, 'routine', text)
+    assert.equal(verdict.class, 'urgent', text)
+    assert.equal(verdict.ruleId, ruleId, text)
+    assert.equal(verdict.reason, reason, text)
+
+    // The class is not the promise; the exit code is where a caller gets burned.
+    // "routine / exit 0 clean" is the pair that let a production outage pass CI.
+    const result = triageBatch([item('a', text)], config)
+    assert.equal(result.items[0].class, 'urgent', text)
+    assert.equal(result.summary.counts.routine, 0, text)
+    assert.deepEqual(result.summary.urgentIds, ['a'], text)
+    assert.equal(result.exitCode, EXIT.FINDINGS, text)
+    assert.notEqual(result.exitCode, EXIT.CLEAN, text)
+  }
+})
+
+test('A ROUTINE RULE CANNOT DECIDE A TICKET THAT REPORTS A MALFUNCTION', () => {
+  // The reverse verification for the test above: an assertion only means something
+  // if it can go red, so this one is built to distinguish the two implementations
+  // rather than to agree with whichever one is shipped.
+  //
+  // The input has the shape that broke 0.1.1 — a question in the first sentence, a
+  // malfunction in the second — and deliberately uses wording the severity rules do
+  // NOT know ("throws an error" is not in `outage`, `crash_with_trace` wants a
+  // traceback, `wrong_result` wants "the wrong answer"). So a first-match-anywhere
+  // prefilter sees exactly one rule match:
+  //
+  //   'How do I install this?'  -> install_question -> routine
+  //
+  // and the malfunction sentence is never looked at, which is the fail-open. The
+  // first-match verdict is computed here from the live table, so if the prefilter is
+  // ever put back to first-match (or `guardRoutine` is removed) the two sides
+  // collapse to `routine` and the assertions below fail. The mutation was run
+  // against a copy of this package: with the first match restored the `notEqual` and
+  // `reason` assertions below go red, with the vocabulary widening reverted only the
+  // six-case test goes red, and with `guardRoutine` removed only this test and the
+  // next one go red. All three were observed, not assumed.
+  //
+  // The question half is `install_question` rather than `usage_question` on purpose:
+  // the four rules that had no reason-code assertion can be neutered independently,
+  // and a fixture that leaned on one of them would make this test red for a reason
+  // that has nothing to do with what it checks.
+  const text = 'How do I install this? The dashboard throws an error whenever I open it.'
+
+  const firstMatch = PREFILTER_RULES.find((rule) => rule.re.test(text))
+  assert.equal(firstMatch.id, 'install_question',
+    'the fixture must be one a first-match prefilter decides with a routine rule')
+  assert.equal(firstMatch.class, 'routine')
+
+  const verdict = prefilter(item('1', text), config)
+  assert.notEqual(verdict.class, firstMatch.class,
+    'first-match says routine here, and that is the bug this asserts against')
+  assert.equal(verdict.class, 'needs_review')
+  assert.equal(verdict.reason, 'MALFUNCTION_REPORTED')
+  assert.ok(verdict.reasonCodes.includes('INSTALL_QUESTION'),
+    `the rule that would have swallowed it must still be reported, got ${JSON.stringify(verdict.reasonCodes)}`)
+
+  // End to end, the class a caller reads is no longer `routine`. Its exit code is
+  // still 0, because a `needs_review` the prefilter decided is not a finding in this
+  // release — a separate gap, stated in the CHANGELOG and left alone here: closing
+  // it would change what `failOn: any` means for `regression`, `wrong_result`,
+  // `performance` and `flaky` too, which is not this fix.
+  assert.equal(triageBatch([item('a', text)], config).items[0].class, 'needs_review')
+
+  // And the guard reads whole words, which is a real property rather than a detail:
+  // an unbounded `hangs?` fires on "change" and an unbounded `fail` on "failsafe", so
+  // a routine question with nothing broken in it would be pulled to `needs_review` by
+  // a fragment of another word. Both of these stay routine.
+  for (const clean of ['How do I configure a change-detection hook?',
+    'Where can I find the failsafe documentation?']) {
+    assert.equal(prefilter(item('1', clean), config).class, 'routine', clean)
+  }
+})
+
+test('class precedence does not depend on the order of a caller-supplied rule table', () => {
+  // `config.rules` lets a caller replace the table, and under first-match-wins the
+  // fail-open was back on the table: a routine rule listed first decided the ticket
+  // and the urgent rule below it never ran. Precedence is by class, so the answer no
+  // longer depends on who typed the table in what order. This is the second mutation
+  // detector for that change — reversing the table changes nothing a caller can see.
+  const reversed = resolveConfig({ rules: [...PREFILTER_RULES].reverse() })
+  const verdict = prefilter(
+    item('1', 'How do I install this? The service is down for all users.'), reversed)
+  assert.equal(verdict.class, 'urgent')
+  assert.equal(verdict.reason, 'OUTAGE_REPORTED')
+
+  // And the guard survives a caller's table too: the routine half matches, the
+  // malfunction is unrecognised, so the item is a question a human should read.
+  const hidden = prefilter(
+    item('1', 'How do I install this? The dashboard throws an error.'), reversed)
+  assert.equal(hidden.class, 'needs_review')
+})
+
+test('THE FOUR RULES THAT HAD NO REASON-CODE ASSERTION REPORT THEIR OWN CODE', () => {
+  // Measured gap, closed: `wrong_result`, `performance`, `flaky` and `usage_question`
+  // could each be neutered (`re: /(?!)/`, never matching) with this suite still
+  // reporting 41 pass / 0 fail, because `INCORRECT_RESULT`, `PERFORMANCE_REPORTED`,
+  // `INTERMITTENT_REPORTED` and `USAGE_QUESTION` appeared nowhere in it. A class-level
+  // assertion cannot see that: the item still lands `needs_review` or `routine` by way
+  // of another rule, and the reason code — the thing the output actually carries —
+  // is the only place the missing rule shows up.
+  //
+  // `scripts/verify-artifacts.mjs` has a positive sample per rule and would catch it,
+  // which is why it now runs on the publish path (`prepack`). This is the unit-level
+  // copy of that guard, so `npm test` alone fails too.
+  const cases = [
+    ['It gives the wrong answer for negative numbers', 'wrong_result', 'INCORRECT_RESULT'],
+    ['The export takes 40 minutes now', 'performance', 'PERFORMANCE_REPORTED'],
+    ['This is intermittent, it only fails sometimes', 'flaky', 'INTERMITTENT_REPORTED'],
+    ['Is it possible to export as CSV?', 'usage_question', 'USAGE_QUESTION'],
+  ]
+  for (const [text, ruleId, reason] of cases) {
+    const verdict = prefilter(item('1', text), config)
+    assert.equal(verdict.ruleId, ruleId, text)
+    assert.equal(verdict.reason, reason, text)
+
+    const result = triageBatch([item('a', text)], config)
+    assert.ok(result.items[0].reasonCodes.includes(reason),
+      `${text} -> ${JSON.stringify(result.items[0].reasonCodes)}`)
+    assert.ok(result.items[0].reasonCodes.includes(`RULE_${ruleId.toUpperCase()}`),
+      `${text} -> ${JSON.stringify(result.items[0].reasonCodes)}`)
+  }
 })
 
 test('a structured field outranks the body text', () => {

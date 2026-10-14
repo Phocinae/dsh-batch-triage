@@ -47,6 +47,12 @@ configured, a budget exhausted — produces `needs_review`. Turning "I could not
 tell" into "nothing to see here" is the one failure this tool exists to prevent,
 and the test suite pins it in both directions.
 
+0.1.2 tightened what "a rule said so" is allowed to mean. A rule decides on a
+*phrase*, and a ticket has more than one sentence: when the phrase that matched is a
+question and another sentence reports something broken, the question rule does not get
+to decide the ticket. It becomes `needs_review` with `MALFUNCTION_REPORTED`, and the
+rule that would have swallowed it stays in `reasonCodes` so a reader sees both halves.
+
 `decidedBy` says which tier actually decided:
 
 | value | meaning |
@@ -61,10 +67,12 @@ The last two both carry `escalate: true`. Neither is a verdict about the ticket.
 
 A **structured field outranks the body text**: `severity: critical`,
 `security: true`, `data_loss: true`, `reporter_tier: enterprise`. A reporter who
-filled in a form has already told you, and no wording in the body should be able
-to overrule that.
+filled in a form has already told you, and no wording in the body can lower what the
+field said. Wording that reports something *worse* still raises it — a field can never
+bury an outage, and when the two disagree the item carries both reason codes.
 
-Otherwise the first matching text rule wins, in a documented order:
+Otherwise **the highest class any rule claims wins**, and the table is written
+strongest first so that a tie inside a class goes to the rule listed first:
 
 | class | rules |
 |---|---|
@@ -72,12 +80,50 @@ Otherwise the first matching text rule wins, in a documented order:
 | `needs_review` | `regression`, `wrong_result`, `performance`, `flaky` |
 | `routine` | `install_question`, `usage_question`, `documentation`, `feature_request`, `thanks` |
 
-Urgent rules run first on purpose: a ticket that reports an outage *and* phrases
-itself as a question must not be swallowed by the question rule. That is a test.
+A ticket that reports an outage *and* phrases itself as a question must not be
+swallowed by the question rule. That is a test — and in 0.1.1 it was a test that could
+not fail, because its fixture used wording the `outage` rule already recognised, so the
+fixture and the rule shared an assumption and the precedence was never really exercised.
+Precedence is by class rather than by position now, which also means a caller-supplied
+`rules` array cannot reorder the table into a fail-open.
 
-First-match-wins is chosen over "most specific wins" deliberately. A scoring system
-would need weights nobody could defend; a documented order is inspectable, and a
-rule that never fires is a bug you can see.
+Class precedence alone was not enough, and the six measured tickets below are why.
+`outage` did not know "returns 500 for every request", so *no* severity rule matched,
+and the question rule decided the whole ticket from one sentence of it. So a `routine`
+verdict gets one more check: if the body reports a malfunction — an error, a crash,
+something "unusable", a 5xx, deleted records, a leaked credential — in wording no
+severity rule could name, the item becomes `needs_review` with `MALFUNCTION_REPORTED`
+instead of `routine`. That guard only ever *refuses* a `routine`; it cannot raise
+anything to `urgent`, and it cannot touch a verdict a severity rule already made.
+
+Precedence by class is chosen over "most specific wins" deliberately. A scoring system
+would need weights nobody could defend; a class ladder needs none, and the table stays
+inspectable — a rule that never fires is a bug you can see.
+
+The wordings the fix was measured against, verbatim from the audit. All six were
+`routine` with exit **0** on 0.1.1:
+
+| ticket | 0.1.1 | 0.1.2 |
+|---|---|---|
+| `How do I install this? Also our production API returns 500 for every request.` | `routine` `INSTALL_QUESTION`, exit 0 | `urgent` `OUTAGE_REPORTED`, exit 1 |
+| `Is there documentation for the auth flow? We are seeing records deleted from our database.` | `routine` `DOCUMENTATION_REQUEST`, exit 0 | `urgent` `DATA_LOSS_REPORTED`, exit 1 |
+| `Feature request: please add CSV export. Meanwhile the app is unusable for our whole team.` | `routine` `FEATURE_REQUEST`, exit 0 | `urgent` `OUTAGE_REPORTED`, exit 1 |
+| `How do I configure SSRF protection? Our pentest found we can read other users files.` | `routine` `INSTALL_QUESTION`, exit 0 | `urgent` `SECURITY_REPORTED`, exit 1 |
+| `where can i find the logs? the service has been returning 503 all morning` | `routine` `INSTALL_QUESTION`, exit 0 | `urgent` `OUTAGE_REPORTED`, exit 1 |
+| `What is the right way to rotate keys? Our API token leaked in a public repo.` | `routine` `USAGE_QUESTION`, exit 0 | `urgent` `SECURITY_REPORTED`, exit 1 |
+
+A ticket that is *only* a question is unaffected: `How do I install this on Windows?` is
+still `routine`, and a batch of nothing but routine items still exits 0. The guard is a
+floor, not a bias toward urgency.
+
+**What the guard costs, stated rather than discovered later.** It is conservative on
+purpose, so a question that merely *mentions* a failure word is bumped as well:
+`How do I handle errors returned by the parser?` comes out `needs_review` instead of
+`routine`. The class changes; the exit code does not, because a `needs_review` the
+prefilter decided is not a finding in this release. That is a real remaining gap — the
+guard's own items still exit 0, which is why the six above had to land `urgent` on
+their merits rather than merely `needs_review`. It is written up in the CHANGELOG
+rather than left for a reader to find.
 
 ## Exit codes
 
@@ -266,12 +312,17 @@ optional peer.
 ## Testing
 
 ```sh
-npm test                  # 37 test cases, no host required
+npm test                  # 45 test cases, no host required
 npm run verify:artifacts   # what npm publish would actually ship
 ```
 
-`node --test` reports *test cases*, not assertions: this suite is 37 cases containing
-roughly 130 `assert` calls, many of them inside loops. The distinction matters when a
+Both run on the publish path: `prepack` is `npm test && npm run verify:artifacts`, so a
+rule that stopped firing cannot be published. It could before 0.1.2 — `verify:artifacts`
+carries a positive sample for every rule and would have gone red, but nothing ran it on
+the way out.
+
+`node --test` reports *test cases*, not assertions: this suite is 45 cases containing
+roughly 170 `assert` calls, many of them inside loops. The distinction matters when a
 case loops — one case failing on the third of five iterations is one failure, and the
 case count alone will not tell you which.
 

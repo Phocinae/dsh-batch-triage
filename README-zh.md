@@ -43,6 +43,11 @@ exit 6 modelUnavailable
 **全部**产出 `needs_review`。把「我判不了」变成「没什么可看的」，
 是这个工具存在的唯一理由所要防的事，测试在两个方向都钉住了它。
 
+0.1.2 收紧了「规则说了」这句话的适用范围。规则锚定的是一个**短语**，而一张工单
+不止一句话：当命中的短语是个疑问句、而同一张工单的另一句话在报告故障时，
+疑问句规则没有资格判掉整张工单。它会变成 `needs_review` + `MALFUNCTION_REPORTED`，
+而那条本来会吞掉它的规则仍留在 `reasonCodes` 里，两半都看得见。
+
 `decidedBy` 说明实际是哪一层判的：
 
 | 值 | 含义 |
@@ -58,7 +63,8 @@ exit 6 modelUnavailable
 **结构化字段强于正文**：`severity: critical`、`security: true`、`data_loss: true`、
 `reporter_tier: enterprise`。填过表的人已经告诉你了，正文里的一句话不该能推翻它。
 
-否则**首个命中的文本规则生效**，顺序是有文档的：
+否则**取所有规则中类别最高的那一条**；表按类别从强到弱排列，
+所以同一类别内平手时，靠前的那条规则胜出：
 
 | 类别 | 规则 |
 |---|---|
@@ -66,11 +72,43 @@ exit 6 modelUnavailable
 | `needs_review` | `regression`、`wrong_result`、`performance`、`flaky` |
 | `routine` | `install_question`、`usage_question`、`documentation`、`feature_request`、`thanks` |
 
-urgent 规则排在最前是有意的：一个既报告故障、又写成疑问句的工单，
-不能被疑问句规则吞掉 —— 这条有测试。
+一个既报告故障、又写成疑问句的工单，不能被疑问句规则吞掉 —— 这条有测试。
+但在 0.1.1 里，那是一条**不可能失败**的测试：它的样本用的是 `outage` 规则本来就认得的措辞，
+样本和规则共享了同一个假设，真正的优先级从没被检验过。现在优先级按**类别**而不是按**位置**，
+所以无论表怎么排 —— 包括调用方通过 `rules` 传入的表 —— 疑问句规则都无法判掉一条 urgent 规则也命中的工单。
 
-选「首个命中」而不是「最具体者胜」是刻意的。打分制需要一套没人能辩护的权重；
-**一个有文档的顺序是可检查的**，而一条永不命中的规则是一个**看得见的** bug。
+只有类别优先级还不够，下面那六条实测工单就是证明：`outage` 不认
+「returns 500 for every request」，于是**没有任何**严重性规则命中，
+疑问句规则只凭其中一句话就判了整张工单。所以 `routine` 结论还要再过一道检查：
+如果正文报告了故障 —— 报错、崩溃、「unusable」、5xx、记录被删、凭据泄露 ——
+而措辞是没有任何严重性规则能命名的，这条 item 就变成
+`needs_review` + `MALFUNCTION_REPORTED`，而不是 `routine`。
+这道守卫只会**拒绝** `routine`；它不能把任何东西升成 `urgent`，
+也不会碰严重性规则已经做出的判断。
+
+选「类别优先级」而不是「最具体者胜」是刻意的。打分制需要一套没人能辩护的权重；
+类别阶梯不需要，而规则表依然可检查 —— 一条永不命中的规则是一个**看得见的** bug。
+
+修复所依据的六条措辞，逐字来自那次审计。在 0.1.1 上六条**全部**是 `routine`、退出码 **0**：
+
+| 工单 | 0.1.1 | 0.1.2 |
+|---|---|---|
+| `How do I install this? Also our production API returns 500 for every request.` | `routine` `INSTALL_QUESTION`，退出 0 | `urgent` `OUTAGE_REPORTED`，退出 1 |
+| `Is there documentation for the auth flow? We are seeing records deleted from our database.` | `routine` `DOCUMENTATION_REQUEST`，退出 0 | `urgent` `DATA_LOSS_REPORTED`，退出 1 |
+| `Feature request: please add CSV export. Meanwhile the app is unusable for our whole team.` | `routine` `FEATURE_REQUEST`，退出 0 | `urgent` `OUTAGE_REPORTED`，退出 1 |
+| `How do I configure SSRF protection? Our pentest found we can read other users files.` | `routine` `INSTALL_QUESTION`，退出 0 | `urgent` `SECURITY_REPORTED`，退出 1 |
+| `where can i find the logs? the service has been returning 503 all morning` | `routine` `INSTALL_QUESTION`，退出 0 | `urgent` `OUTAGE_REPORTED`，退出 1 |
+| `What is the right way to rotate keys? Our API token leaked in a public repo.` | `routine` `USAGE_QUESTION`，退出 0 | `urgent` `SECURITY_REPORTED`，退出 1 |
+
+**只**是提问的工单不受影响：`How do I install this on Windows?` 仍然是 `routine`，
+一批全是 routine 的批次仍然退出 0。这道守卫是地板，不是往紧急方向偏。
+
+**这道守卫的代价，写在这里而不是等你自己发现**：它刻意保守，所以**提到**故障词的提问
+也会被抬高 —— `How do I handle errors returned by the parser?` 会是 `needs_review`
+而不是 `routine`。类别变了，退出码没变：本版里 prefilter 判出的 `needs_review`
+不构成 finding。这是一个**真实存在的遗留缺口** —— 守卫自己判出的条目仍然退出 0，
+所以上面六条必须凭自身理由落到 `urgent`，而不是仅仅停在 `needs_review`。
+这一点写在 CHANGELOG 里，而不是留给读者去发现。
 
 ## 退出码
 
@@ -209,11 +247,16 @@ summary 计入 `budgetRefusals`。**被截断的运行不能读起来像完整�
 ## 测试
 
 ```sh
-npm test                  # 37 个测试用例，不需要主机
+npm test                  # 45 个测试用例，不需要主机
 npm run verify:artifacts   # 检查 npm publish 真正会发出去的东西
 ```
 
-`node --test` 报的是**测试用例**数，不是断言数：本套件 37 个用例里约有 130 处
+两者都在发布路径上：`prepack` 是 `npm test && npm run verify:artifacts`，
+所以一条不再命中的规则发不出去。0.1.2 之前它发得出去 ——
+`verify:artifacts` 为每条规则都带了一个正向样本、红了就会失败，
+但没有任何环节在出门前跑它。
+
+`node --test` 报的是**测试用例**数，不是断言数：本套件 45 个用例里约有 170 处
 `assert` 调用，很多在循环里。这个区别在用例带循环时是重要的 ——
 一个用例在五次迭代的第三次上失败，仍然只算一个失败，而用例数不会告诉你失败的是哪一次。
 

@@ -15,7 +15,8 @@ A **structured field outranks the body text.** If the item carries
 `severity: critical`, `security: true` or `data_loss: true`, that sets the class
 before any wording is read — a reporter who filled in a form has already told you.
 
-Otherwise the first matching text rule wins, in this order:
+Otherwise the **highest class any rule claims** wins, and the table is listed strongest
+first so a tie inside a class goes to the rule listed first:
 
 | class | what the rules recognise |
 |---|---|
@@ -23,8 +24,18 @@ Otherwise the first matching text rule wins, in this order:
 | `needs_review` | a regression, a wrong result, a performance problem, intermittent behaviour |
 | `routine` | an install or usage question, a docs problem, a feature request, a bare thank-you |
 
-Urgent rules run first on purpose: a ticket that reports an outage *and* phrases
-itself as a question must not be swallowed by the question rule.
+A ticket that reports an outage *and* phrases itself as a question must not be swallowed
+by the question rule, and precedence is by class rather than by position — so a routine
+rule cannot decide a ticket that a severity rule also matches, whatever order the table
+arrives in.
+
+One further check applies to `routine` only, because a rule matches a *phrase* and a
+ticket has more than one sentence. If the matched phrase is a question and another
+sentence reports something broken — an error, a crash, something unusable, a 5xx,
+deleted records, a leaked credential — the item is `needs_review` with
+`MALFUNCTION_REPORTED` instead of `routine`, and the question rule is still named in
+`reasonCodes`. A ticket phrased as a question can therefore come back as work to do;
+that is deliberate, not a mis-read.
 
 ## The rule that matters most
 

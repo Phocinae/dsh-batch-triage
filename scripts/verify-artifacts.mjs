@@ -155,6 +155,20 @@ try {
       verdict.class !== 'routine', `${verdict.class} / ${verdict.reason}`)
   }
 
+  // The same promise in its harder form, and the one 0.1.1 shipped green while it was
+  // false: a question-shaped ticket whose *other* sentence reports a malfunction must
+  // not be settled by the question rule. The wording is deliberately outside every
+  // severity rule's vocabulary — "throws an error" is not a traceback, an outage noun
+  // or an incorrect result — because a sample a severity rule can claim tests that
+  // rule rather than this guard. Remove `guardRoutine` and this becomes `routine`,
+  // which is the exit-0 fail-open the unit suite pins from the other side.
+  const hidden = mod.prefilter({
+    id: 'x',
+    text: 'How do I install this? The dashboard throws an error whenever I open it.',
+  }, config)
+  check('A QUESTION CANNOT SWALLOW A MALFUNCTION IT DOES NOT RECOGNISE',
+    hidden.class !== 'routine', `${hidden.class} / ${hidden.reason}`)
+
   // Every rule must be able to fire. A rule that cannot match is indistinguishable
   // from a rule that found nothing, so each one is exercised with wording it
   // declares it recognises.

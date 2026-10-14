@@ -1,7 +1,7 @@
 {
   "name": "dsh-batch-triage",
   "description": "Deterministic-first triage for DeepSeek Harness: a rule prefilter classifies every ticket, and anything no rule can place is needs_review rather than guessed at. No model, no service, no network.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Phocinae/dsh-batch-triage.git"
@@ -60,7 +60,7 @@
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
     "verify:artifacts": "node scripts/verify-artifacts.mjs",
-    "prepack": "npm test"
+    "prepack": "npm test && npm run verify:artifacts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5-alpha.1"

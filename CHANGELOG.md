@@ -1,5 +1,175 @@
 # Changelog
 
+## 0.1.2 — 2026-10-15
+
+One defect, in the same direction 0.1.1 was released to close: a production outage read
+as `routine` and the run exited **0 as clean**. 0.1.1 fixed the half where a *field*
+could bury an outage. This fixes the half that was still open, where a *rule* decided a
+whole ticket from one of its sentences.
+
+### Blocker — "and that is a test" was a test that could not fail
+
+`README.md` promised, in writing:
+
+> a ticket that reports an outage *and* phrases itself as a question must not be
+> swallowed by the question rule. **That is a test.**
+
+There was a test. Both halves of its fixture came from the rule table's own vocabulary:
+the body was `'How do I stop the outage? The service is down for all users.'`, and the
+`outage` rule recognises "the service is down". The fixture and the rule it was testing
+shared an assumption, so the assertion passed for a reason unrelated to the promise — it
+never exercised precedence against an outage the rules did not already know.
+
+That is the general shape worth remembering: **a test whose fixture is drawn from the
+implementation's own vocabulary cannot see a vocabulary gap.** The fixture has to come
+from the world the tool is pointed at.
+
+Written the way a ticket is actually written, the promise is gone. Six tickets, verbatim
+from the audit that measured this, all six on 0.1.1:
+
+```
+How do I install this? Also our production API returns 500 for every request.
+  -> routine / INSTALL_QUESTION        exit 0 clean
+
+Is there documentation for the auth flow? We are seeing records deleted from our database.
+  -> routine / DOCUMENTATION_REQUEST   exit 0 clean
+
+Feature request: please add CSV export. Meanwhile the app is unusable for our whole team.
+  -> routine / FEATURE_REQUEST         exit 0 clean
+
+How do I configure SSRF protection? Our pentest found we can read other users files.
+  -> routine / INSTALL_QUESTION        exit 0 clean
+
+where can i find the logs? the service has been returning 503 all morning
+  -> routine / INSTALL_QUESTION        exit 0 clean
+
+What is the right way to rotate keys? Our API token leaked in a public repo.
+  -> routine / USAGE_QUESTION          exit 0 clean
+```
+
+The mechanism: `outage` recognised `down`/`unavailable`/`unreachable`/`offline` and
+nothing else, so "returns 500 for every request" matched no severity rule at all and
+nothing raised. The `install_question` rule then matched the *other sentence*, and a rule
+anchored to a phrase decided the entire ticket. No rule was wrong about the phrase it
+matched — the defect is that a phrase was treated as a verdict about a ticket, and the
+run reported the one pair that reads as "nothing needs a human".
+
+### The fix, in two halves — plus a third that was not the fix
+
+**1. The vocabularies now contain the symptom as well as the state.** `outage` knew the
+service *is* something; it did not know the service *returns* something. It now accepts
+`returns/returning/throwing/serving/giving … 5xx` and `5xx errors/responses/status` —
+the symptom form — alongside `is unusable`, `is not working`, `is dead` and three more
+nouns a reporter actually names (`dashboard`, `backend`, `endpoint`). `data_loss` accepts
+what reporters write instead of `deleted my`: `(records|rows|entries|files|documents) …
+deleted|removed|missing|gone|lost|dropped`, and `deleted from our database`. `security`
+accepts the word orders that were missing — `token leaked` as well as `leaked token`,
+`read other users files`, `access other tenants`, `pentest found …`.
+
+Two boundaries are deliberate, because "widen the regex" is how a rule becomes a
+liability. **`5xx` only**: a `4xx` is as often the caller's own request being rejected,
+and accepting every status code would make "why does this return 401?" an outage. **Bare
+`SSRF` and bare `pentest` are not added**: "how do I configure SSRF protection?" is a
+question *about* security, not a report of it, and it stays `routine`.
+
+**2. A `routine` verdict is now refused when the body reports a malfunction.** This is
+the half that is not a vocabulary, because a vocabulary is always finite and the next
+wording nobody thought of is exactly the case that shipped. A rule matching a phrase is
+the problem; so a `routine` result gets one more check against `MALFUNCTION_WORDING` — an
+error, an exception, a crash, "unusable", "not working", a 5xx, an outage, records gone,
+a leaked credential, unauthorised access, a wrong answer, a regression. When it hits, the
+item becomes `needs_review` with `MALFUNCTION_REPORTED` and the routine rule's own reason
+code is kept beside it, so a reader sees "this is broken **and** the question rule matched
+the other half".
+
+The guard is asymmetric on purpose, in three ways worth stating:
+
+* it can only **refuse** a `routine`. It cannot raise anything to `urgent` — inventing a
+  severity is the opposite failure — and it never touches a verdict a severity rule
+  already made;
+* it applies **only when the winning rule is `routine`**. An item no rule placed is
+  already `undecided`, which the runner reports as `needs_review` **with the coverage gap
+  attached** (`MODEL_NOT_CONFIGURED`, exit 6). Letting the guard claim those items would
+  convert that gap into a prefilter verdict and quietly lower the exit code to 0 — fixing
+  one fail-open by opening another;
+* it is a guard, not a classifier: it never places an item, it only stops a rule placing
+  one.
+
+**3. Precedence is by class, not by position — and this alone changed nothing.** The rule
+loop used to break on the first match. It now evaluates every rule, the highest class
+wins, and ties go to the earlier rule. For the shipped table that is the *same answer*,
+because the table is written strongest class first; this is verified, not assumed (the
+whole suite passes unchanged with that edit applied on its own). It is here because
+first-match made precedence a property of whoever typed the table: `config.rules` accepts
+a caller's table in any order, and a routine rule listed first would have put the
+fail-open straight back. Precedence by class is a property of the rules.
+
+### What the guard costs, and the gap this release names rather than closes
+
+**The cost.** The guard is deliberately conservative, so a question that merely *mentions*
+a failure word is bumped too: `How do I handle errors returned by the parser?`,
+`Is it possible to configure a custom 500 page?` and `What is the right way to catch an
+exception in a plugin?` all become `needs_review` rather than `routine`. A ticket that is
+only a question is unaffected — `How do I install this on Windows?` is still `routine`,
+and a batch of nothing but routine items still exits 0 — but the guard is a floor, not a
+bias toward urgency, and this is what a floor costs.
+
+**The gap.** A `needs_review` the *prefilter* decided is not a finding in this release, so
+the guard's own items still exit 0. The class stops lying; the exit code does not change,
+which is why the six tickets above had to land `urgent` on their own merits rather than
+merely `needs_review`. Closing that is a change to what `failOn: any` means for
+`regression`, `wrong_result`, `performance` and `flaky` as well, so it belongs in its own
+release with its own measurement rather than riding along inside a bug fix.
+
+### Tests
+
+41 → 45 cases, and the new ones were verified by mutation rather than by passing:
+
+* **the six tickets above, verbatim**, asserting class `urgent`, the reason code, and
+  `exitCode === 1` — with `notEqual(routine)` and `notEqual(EXIT.CLEAN)` alongside, so the
+  pair that burned the caller is named in the assertion;
+* **a reverse verification** for the promise, built to distinguish the two
+  implementations instead of agreeing with whichever is shipped: it computes the
+  first-match verdict from the live table, asserts that a first-match prefilter says
+  `routine` for the fixture, and then asserts the shipped prefilter does not. If the
+  prefilter is put back to first-match, both sides collapse to `routine` and it fails;
+* **the four rules that had no reason-code assertion** — `wrong_result`, `performance`,
+  `flaky`, `usage_question`. Measured: replacing all four `re:` with `/(?!)/` left the
+  0.1.1 suite at **41 pass / 0 fail**, because `INCORRECT_RESULT`, `PERFORMANCE_REPORTED`,
+  `INTERMITTENT_REPORTED` and `USAGE_QUESTION` appeared nowhere in it. A class-level
+  assertion cannot see this: the item still lands `needs_review` or `routine` by way of
+  another rule, and only the reason code shows the rule is gone.
+
+The mutation matrix, run against copies of the package (never the working tree):
+
+| mutation | result |
+|---|---|
+| pre-fix implementation, new tests | 42 pass / **3 fail** — the six-ticket, guard and rule-order tests |
+| pre-fix implementation, pre-fix tests, four rules neutered | 41 pass / 0 fail — the audit's measurement, reproduced |
+| new implementation, four rules neutered | 44 pass / **1 fail** — the reason-code test, alone |
+| vocabulary widening reverted, guard kept | 44 pass / **1 fail** — the six-ticket test |
+| guard removed, vocabulary kept | 43 pass / **2 fail** — the two guard tests |
+| guard kept but its word boundaries removed | 44 pass / **1 fail** — the guard test's precision assertions |
+
+That last row is a defect this release introduced and caught in review: the guard's
+alternatives were joined without `\b`, so `hangs?` matched "change" and `fail…` matched
+"failsafe" — a routine question pulled to `needs_review` by a fragment of another word.
+The boundaries are there now, and `How do I configure a change-detection hook?` pins them.
+
+The 0.1.1 test itself is kept, renamed to what it actually checks ("urgent wording is not
+swallowed by a question in the same ticket"), with a comment saying why it was not
+evidence and pointing at the test that is.
+
+### The verifier is now on the publish path
+
+`prepack` was `npm test`. `scripts/verify-artifacts.mjs` carries a positive sample for
+every rule and asserts each one still fires — but nothing ran it on the way out, which is
+how the four rules above could be dead in a package that passed its own suite. `prepack`
+is now `npm test && npm run verify:artifacts`, and the verifier gained the same promise as
+a behavioural check: a question-shaped ticket with an unrecognised malfunction in the
+other sentence must not come back `routine`. Checked against a mutant with the guard
+removed, it fails with `routine / INSTALL_QUESTION` — the fail-open itself.
+
 ## 0.1.1 — 2026-10-14
 
 Two defects from an independent verification pass over 0.1.0, one of them a
