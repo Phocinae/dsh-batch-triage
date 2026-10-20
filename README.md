@@ -27,7 +27,7 @@ exit 6 modelUnavailable
 ## Quick start
 
 ```sh
-dsh plugin --profile web add dsh-batch-triage@0.1.2
+dsh plugin --profile web add dsh-batch-triage@0.1.3
 ```
 
 batch_triage is now available; Rules place the tickets they can; anything they cannot place is returned as `needs_review` — never quietly filed as routine.

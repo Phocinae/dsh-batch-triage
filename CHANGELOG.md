@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 — 2026-10-20
 
 ### Changed — a prefilter `needs_review` is now a finding under `failOn: any`
 
