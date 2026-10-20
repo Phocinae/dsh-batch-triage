@@ -202,6 +202,21 @@ summary 计入 `budgetRefusals`。**被截断的运行不能读起来像完整�
 「以程序方式提供客户端」的宿主用的接缝。本版仍然从不调用这个客户端 ——
 `modelClass` 保持 `unavailable`。
 
+### 从 0.1.2 迁移
+
+如果某个 CI 任务依赖 `failOn: any` 在“唯一问题是规则判出的 `needs_review`”
+（`regression`、`wrong_result`、`performance`、`flaky`、`severity: high|medium`）
+时返回 `0`，现在它会返回 `1`。
+
+请选择你真正想要的策略：
+
+- `failOn: urgent` —— 只有 urgent 会失败。它**不是**旧行为的精确恢复：
+  它也会忽略残差升级，而旧的 `any` 会算这些。
+- `failOn: none` —— 只要报告，不做闸门。
+
+这个变化是有意的：规则已经说“需要人看”的批次，不应该给出绿色结果。
+`failOn: any` 仍是默认值。
+
 ## `tau` 在这里能做什么、不能做什么
 
 `tau` 是置信度上的升级阈值，而本版没有置信度可比。

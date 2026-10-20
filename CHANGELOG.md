@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 — 2026-10-20
+
+Documentation only. Adds a **Migrating from 0.1.2** section for the `failOn: any`
+change in 0.1.3: which batches now exit `1`, and how to choose `urgent` / `none`
+if that is not the policy you want. No behavior change.
+
 ## 0.1.3 — 2026-10-20
 
 ### Changed — a prefilter `needs_review` is now a finding under `failOn: any`

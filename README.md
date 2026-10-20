@@ -27,7 +27,7 @@ exit 6 modelUnavailable
 ## Quick start
 
 ```sh
-dsh plugin --profile web add dsh-batch-triage@0.1.3
+dsh plugin --profile web add dsh-batch-triage@0.1.4
 ```
 
 batch_triage is now available; Rules place the tickets they can; anything they cannot place is returned as `needs_review` — never quietly filed as routine.
@@ -244,6 +244,22 @@ both. So the shipped plugin has two visible cases:
 config block below: it is a seam for tests and for a host that supplies a client
 programmatically. It is still never called in this release — `modelClass` stays
 `unavailable`.
+
+### Migrating from 0.1.2
+
+If a CI job relied on `failOn: any` returning `0` for a batch whose only problem
+was a rule-decided `needs_review` (`regression`, `wrong_result`, `performance`,
+`flaky`, or `severity: high|medium`), that batch now exits `1`.
+
+Pick the policy you actually want:
+
+- `failOn: urgent` — only urgent items fail the run. This is not an exact
+  restoration of the old behavior: it also ignores residual escalations, which
+  the old `any` counted.
+- `failOn: none` — report only; never gate.
+
+The change is intentional: a rule that said "a human should look" should not
+produce a green run. `failOn: any` remains the default.
 
 ## What `tau` can and cannot do here
 

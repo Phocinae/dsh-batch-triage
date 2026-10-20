@@ -1,7 +1,7 @@
 {
   "name": "dsh-batch-triage",
   "description": "Deterministic-first triage for DeepSeek Harness: a rule prefilter classifies every ticket, and anything no rule can place is needs_review rather than guessed at. No model, no service, no network.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Phocinae/dsh-batch-triage.git"
