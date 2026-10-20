@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Changed — a prefilter `needs_review` is now a finding under `failOn: any`
+
+`failOn: any` counted only urgent items and *escalations* (residual items with no
+rule / no model / no budget). A `needs_review` decided by a rule — `regression`,
+`wrong_result`, `performance`, `flaky`, or `severity: high|medium` — has
+`escalate: false`, so a batch containing a single regression ticket exited
+`0 clean`. Reproduced with:
+
+```js
+triageBatch([{ id: 'r1', text: 'Regression: this worked in 0.1.1 and now returns the wrong total.' }],
+  resolveConfig({}))
+// before: class needs_review, exitCode 0, exitBasis 'clean'
+// after : class needs_review, exitCode 1, exitBasis 'findings'
+```
+
+`any` now means exactly what its name says: urgent, any escalation, or any
+`needs_review`. `failOn: urgent` still narrows to urgent only; `failOn: none`
+still reports without gating. This is a deliberate semantics change for callers
+who used `any` as "urgent or residual only" — the alternative was a gate that
+looked green on a ticket a rule had already flagged for a human.
+
+Exit-code precedence is unchanged: a residual item with no model client still
+exits `6` before the finding rung, and usage/config errors still outrank both.
+
+Tests: the existing prefilter-to-`needs_review` end-to-end test now asserts
+`exitCode 1` / `exitBasis findings`, and `failOn narrows…` gains the
+lone-regression case plus `urgent`/`none` negative controls.
+
+### Added — CI and an OIDC publishing path
+
+The package had no `.github/workflows`, so its 45 tests and 71 artefact
+conditions ran only on the machine that wrote them, and publishing required the
+long-lived npm token. `ci.yml` now runs both on Linux, Windows and macOS (Node 22
+and 24); `release.yml` publishes with npm trusted publishing (`id-token: write`,
+npm >= 11.5.1). The publish job fails cleanly until a trusted publisher is
+configured on npmjs.com — there is deliberately no token to fall back to.
+
 ## 0.1.2 — 2026-10-15
 
 One defect, in the same direction 0.1.1 was released to close: a production outage read

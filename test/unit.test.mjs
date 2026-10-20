@@ -188,12 +188,13 @@ test('A ROUTINE RULE CANNOT DECIDE A TICKET THAT REPORTS A MALFUNCTION', () => {
   assert.ok(verdict.reasonCodes.includes('INSTALL_QUESTION'),
     `the rule that would have swallowed it must still be reported, got ${JSON.stringify(verdict.reasonCodes)}`)
 
-  // End to end, the class a caller reads is no longer `routine`. Its exit code is
-  // still 0, because a `needs_review` the prefilter decided is not a finding in this
-  // release — a separate gap, stated in the CHANGELOG and left alone here: closing
-  // it would change what `failOn: any` means for `regression`, `wrong_result`,
-  // `performance` and `flaky` too, which is not this fix.
-  assert.equal(triageBatch([item('a', text)], config).items[0].class, 'needs_review')
+  // End to end, the class a caller reads is no longer `routine`, and under the
+  // default `failOn: any` a prefilter needs_review is now a finding (it was
+  // exit 0 clean before 0.1.3). `failOn: urgent` still narrows it away.
+  const result = triageBatch([item('a', text)], config)
+  assert.equal(result.items[0].class, 'needs_review')
+  assert.equal(result.exitCode, EXIT.FINDINGS)
+  assert.equal(result.exitBasis, 'findings')
 
   // And the guard reads whole words, which is a real property rather than a detail:
   // an unbounded `hangs?` fires on "change" and an unbounded `fail` on "failsafe", so
@@ -571,6 +572,17 @@ test('failOn narrows what counts as a finding', () => {
       resolveConfig({ modelClient: () => ({}), failOn: 'urgent' })).exitCode,
     EXIT.CLEAN,
     'failOn: urgent ignores a non-urgent escalation',
+  )
+
+  // A prefilter needs_review is not an escalation, but `any` must count it.
+  // This is the lone-regression-ticket case: before 0.1.3 it exited 0 clean.
+  const onlyRegression = [item('r', 'Regression: this worked in 0.1.1 and now returns the wrong total.')]
+  assert.equal(triageBatch(onlyRegression, withClient).exitCode, EXIT.FINDINGS)
+  assert.equal(
+    triageBatch(onlyRegression,
+      resolveConfig({ modelClient: () => ({}), failOn: 'urgent' })).exitCode,
+    EXIT.CLEAN,
+    'failOn: urgent still ignores a non-urgent needs_review',
   )
 
   // failOn: none asks for a report rather than a gate, so nothing is a finding.

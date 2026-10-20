@@ -213,26 +213,37 @@ refused rather than merged: ids key the answers, so a merge would drop a ticket 
 leave no way to tell which. That refusal is exit `3`, not `2`: the batch itself is
 well-formed, and it is the identity mapping that cannot be honoured.
 
-## What `failOn` can and cannot do here
+## What `failOn` does
 
-`failOn` narrows what counts as a finding for the finding rung: `urgent` ignores a
-non-urgent escalation, `none` asks for a report rather than a gate. That is real, and
-it is what the three values do **when the run reaches the finding rung**.
+`failOn` decides which classes count as a finding (exit `1`):
 
-It cannot lower a rung above it, and `6` sits above `1`. The shipped plugin configures
-no model client, so every batch containing a residual item ends at `6` no matter what
-`failOn` says — the coverage gap is decided before the gate is consulted. The two
-running modes are therefore:
-
-| setup | effect of `failOn` |
+| value | a finding is… |
 |---|---|
-| plugin as shipped (no model client) | none on a batch with residue: the run exits `6` regardless |
-| `triageBatch` called with a config whose `modelClient` is a function | selects between `1` and `0` |
+| `any` (default) | an urgent item, any escalation, **or any `needs_review`** |
+| `urgent` | an urgent item only |
+| `none` | nothing — the caller asked for a report, not a gate |
+
+A `needs_review` is a "a human should look" decision whether it came from a
+prefilter rule (`regression`, `wrong_result`, `performance`, `flaky`, field
+`severity: high|medium`) or from a residual (`no rule matched`, model unavailable,
+budget exhausted). Before 0.1.3 only residual items counted, so a batch containing a
+single regression ticket exited `0 clean` even though a rule had already said it
+needs a human. That gap is closed: under `any`, a rule-decided `needs_review` is a
+finding.
+
+Exit codes still outrank findings. A residual item with no model client exits `6`
+(`modelUnavailable`) before the finding rung, and a usage/config error outranks
+both. So the shipped plugin has two visible cases:
+
+| batch | effect of `failOn` |
+|---|---|
+| contains a residual item (no rule matched) | exits `6` regardless of `failOn` |
+| every item was decided, at least one as `needs_review` | `any` → `1`; `urgent` / `none` → `0` |
 
 `modelClient` is a library-level option and is deliberately not part of the YAML
 config block below: it is a seam for tests and for a host that supplies a client
-programmatically. Setting it is what makes exit `1` reachable at all, and the client
-is still never called in this release — `modelClass` stays `unavailable`.
+programmatically. It is still never called in this release — `modelClass` stays
+`unavailable`.
 
 ## What `tau` can and cannot do here
 
@@ -276,10 +287,10 @@ deliberate rather than tidy: the validation is the part that will still be corre
 when the tier lands, and removing it now would mean re-adding it later under
 pressure.
 
-`failOn` is a special case worth its own sentence: it *is* operative, but only once
-a `modelClient` is configured. With none configured, any batch containing a residue
-item exits 6, and no `failOn` value can change that — so on the shipped path
-`failOn` has no visible effect either.
+`failOn` is a special case worth its own sentence: it is operative on the shipped
+path. A batch whose items were all decided, with at least one `needs_review`, exits
+`1` under `any` and `0` under `urgent` / `none`. Only a residual item (one no rule
+could place, with no model client) outranks the finding rung at `6`.
 
 ## What the rules do with a severity they do not recognise
 
