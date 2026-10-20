@@ -24,6 +24,15 @@ c needs_review  NO_RULE_MATCHED
 exit 6 modelUnavailable
 ```
 
+## Quick start
+
+```sh
+dsh plugin --profile web add dsh-batch-triage@0.1.2
+```
+
+batch_triage is now available; Rules place the tickets they can; anything they cannot place is returned as `needs_review` — never quietly filed as routine.
+
+
 ## Why rules first
 
 A ticket batch is the wrong shape for one model call per item: the volume is high,
