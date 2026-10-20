@@ -84,5 +84,21 @@ jobs:
 
       # prepack runs `npm test` again; that is deliberate. The tarball that gets
       # uploaded is the one whose tests ran immediately before packing.
+      #
+      # A version already on the registry is a successful no-op, not a red run:
+      # this lets a tag be pushed after a manual publish and makes a re-run
+      # idempotent. `npm view` needs no auth.
+      - name: Is this version already on npm?
+        id: published
+        run: |
+          pkg=$(node -p "require('./package.json').name")
+          ver=$(node -p "require('./package.json').version")
+          if npm view "$pkg@$ver" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$pkg@$ver is already published; skipping the upload"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish
+        if: steps.published.outputs.exists != 'true'
         run: npm publish --provenance --access public
