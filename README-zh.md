@@ -2,6 +2,8 @@
 
 **规则判掉简单的工单。规则判不了的一律交给人 —— 永远不会被悄悄记成 routine。**
 
+最近一次核验：DeepSeek Harness `dsh-v0.2.3-alpha.1`（2026-11-22）。
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件。
 **不调模型、不连服务、不联网、不需要 API key。**
 
@@ -256,7 +258,6 @@ summary 计入 `budgetRefusals`。**被截断的运行不能读起来像完整�
 因为 0.1.0 只认四个标签，于是 `severity: 'P0'` 的行为和「没填 severity」一模一样。
 
 ## 本版**没有**的东西
-
 
 **模型层。** 输出已经带着它会填的字段（`modelClass`、`confidence`、
 `top2Margin`、`score`），而 `modelClass` 报 `unavailable`，因为那是事实。

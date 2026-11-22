@@ -24,14 +24,15 @@ c needs_review  NO_RULE_MATCHED
 exit 6 modelUnavailable
 ```
 
+Last verified on DeepSeek Harness `dsh-v0.2.3-alpha.1` (2026-11-22).
+
 ## Quick start
 
 ```sh
-dsh plugin --profile web add dsh-batch-triage@0.1.4
+dsh plugin --profile web add dsh-batch-triage@0.1.5
 ```
 
 batch_triage is now available; Rules place the tickets they can; anything they cannot place is returned as `needs_review` — never quietly filed as routine.
-
 
 ## Why rules first
 
@@ -323,7 +324,6 @@ tier), because 0.1.0 accepted four labels and `severity: 'P0'` then behaved exac
 like no severity at all.
 
 ## What is not in this release
-
 
 **The model tier.** The design specifies a local 150M Phocinae model as the fallback
 for the residue, with a fail-closed rule when the service is unreachable. It is not
